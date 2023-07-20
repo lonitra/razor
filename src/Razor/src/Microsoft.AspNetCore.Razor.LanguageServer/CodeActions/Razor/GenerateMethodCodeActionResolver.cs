@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Razor.Language.Components;
 using Microsoft.AspNetCore.Razor.LanguageServer.CodeActions.Models;
 using Microsoft.AspNetCore.Razor.LanguageServer.Common;
 using Microsoft.AspNetCore.Razor.LanguageServer.Formatting;
+using Microsoft.AspNetCore.Razor.LanguageServer.Protocol;
 using Microsoft.AspNetCore.Razor.Utilities;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -25,23 +26,26 @@ internal class GenerateMethodCodeActionResolver : IRazorCodeActionResolver
 {
     private readonly DocumentContextFactory _documentContextFactory;
     private readonly RazorLSPOptionsMonitor _razorLSPOptionsMonitor;
+    private readonly ClientNotifierServiceBase _languageServer;
 
     private static readonly string s_beginningIndents = $"{FormattingUtilities.InitialIndent}{FormattingUtilities.Indent}";
     private static readonly string s_returnType = "$$ReturnType$$";
     private static readonly string s_methodName = "$$MethodName$$";
     private static readonly string s_eventArgs = "$$EventArgs$$";
+    private static readonly string s_methodContent = "$$MethodContent$$";
     private static readonly string s_generateMethodTemplate =
         $"{s_beginningIndents}private {s_returnType} {s_methodName}({s_eventArgs}){Environment.NewLine}" +
         s_beginningIndents + "{" + Environment.NewLine +
-        $"{s_beginningIndents}{FormattingUtilities.Indent}throw new System.NotImplementedException();{Environment.NewLine}" +
+        $"{s_beginningIndents}{FormattingUtilities.Indent}throw new {s_methodContent}();{Environment.NewLine}" +
         s_beginningIndents + "}";
 
     public string Action => LanguageServerConstants.CodeActions.GenerateEventHandler;
 
-    public GenerateMethodCodeActionResolver(DocumentContextFactory documentContextFactory, RazorLSPOptionsMonitor razorLSPOptionsMonitor)
+    public GenerateMethodCodeActionResolver(DocumentContextFactory documentContextFactory, RazorLSPOptionsMonitor razorLSPOptionsMonitor, ClientNotifierServiceBase languageServer)
     {
         _documentContextFactory = documentContextFactory;
         _razorLSPOptionsMonitor = razorLSPOptionsMonitor;
+        _languageServer = languageServer;
     }
 
     public async Task<WorkspaceEdit?> ResolveAsync(JObject data, CancellationToken cancellationToken)
@@ -63,8 +67,6 @@ internal class GenerateMethodCodeActionResolver : IRazorCodeActionResolver
             return null;
         }
 
-        var templateWithMethodSignature = PopulateMethodSignature(documentContext, actionParams);
-
         var code = await documentContext.GetCodeDocumentAsync(cancellationToken).ConfigureAwait(false);
         var uriPath = FilePathNormalizer.Normalize(actionParams.Uri.GetAbsoluteOrUNCPath());
         var razorClassName = Path.GetFileNameWithoutExtension(uriPath);
@@ -74,7 +76,7 @@ internal class GenerateMethodCodeActionResolver : IRazorCodeActionResolver
             || razorClassName is null
             || !code.TryComputeNamespace(fallbackToRootNamespace: true, out var razorNamespace))
         {
-            return GenerateMethodInCodeBlock(code, actionParams, templateWithMethodSignature);
+            return await GenerateMethodInCodeBlockAsync(code, actionParams, documentContext, cancellationToken).ConfigureAwait(false);
         }
 
         var content = File.ReadAllText(codeBehindPath);
@@ -84,7 +86,7 @@ internal class GenerateMethodCodeActionResolver : IRazorCodeActionResolver
         if (@namespace is null)
         {
             // The code behind file is malformed, generate the code in the razor file instead.
-            return GenerateMethodInCodeBlock(code, actionParams, templateWithMethodSignature);
+            return await GenerateMethodInCodeBlockAsync(code, actionParams, documentContext, cancellationToken).ConfigureAwait(false);
         }
 
         var @class = ((BaseNamespaceDeclarationSyntax)@namespace).Members
@@ -92,9 +94,9 @@ internal class GenerateMethodCodeActionResolver : IRazorCodeActionResolver
         if (@class is null)
         {
             // The code behind file is malformed, generate the code in the razor file instead.
-            return GenerateMethodInCodeBlock(code, actionParams, templateWithMethodSignature);
+            return await GenerateMethodInCodeBlockAsync(code, actionParams, documentContext, cancellationToken).ConfigureAwait(false);
         }
-
+        var templateWithMethodSignature = await PopulateMethodSignatureAsync(documentContext, actionParams, content, cancellationToken).ConfigureAwait(false);
         var classLocationLineSpan = @class.GetLocation().GetLineSpan();
         var formattedMethod = FormattingUtilities.AddIndentationToMethod(
             templateWithMethodSignature,
@@ -126,8 +128,14 @@ internal class GenerateMethodCodeActionResolver : IRazorCodeActionResolver
         return new WorkspaceEdit() { DocumentChanges = new[] { codeBehindTextDocEdit } };
     }
 
-    private WorkspaceEdit GenerateMethodInCodeBlock(RazorCodeDocument code, GenerateMethodCodeActionParams actionParams, string templateWithMethodSignature)
+    private async Task<WorkspaceEdit> GenerateMethodInCodeBlockAsync(
+        RazorCodeDocument code,
+        GenerateMethodCodeActionParams actionParams,
+        VersionedDocumentContext documentContext,
+        CancellationToken cancellationToken)
     {
+        var csharpSource = await documentContext.GetCSharpSourceTextAsync(cancellationToken).ConfigureAwait(false);
+        var templateWithMethodSignature = await PopulateMethodSignatureAsync(documentContext, actionParams, csharpSource.ToString(), cancellationToken).ConfigureAwait(false);
         var edit = CodeBlockService.CreateFormattedTextEdit(code, templateWithMethodSignature, _razorLSPOptionsMonitor.CurrentValue);
         var razorTextDocEdit = new TextDocumentEdit()
         {
@@ -138,19 +146,41 @@ internal class GenerateMethodCodeActionResolver : IRazorCodeActionResolver
         return new WorkspaceEdit() { DocumentChanges = new[] { razorTextDocEdit } };
     }
 
-    private static string PopulateMethodSignature(VersionedDocumentContext documentContext, GenerateMethodCodeActionParams actionParams)
+    private async Task<string> PopulateMethodSignatureAsync(
+        VersionedDocumentContext documentContext,
+        GenerateMethodCodeActionParams actionParams,
+        string csharpSource,
+        CancellationToken cancellationToken)
     {
         var templateWithMethodSignature = s_generateMethodTemplate.Replace(s_methodName, actionParams.MethodName);
+        var position = csharpSource.ToString().IndexOf("public partial class");
 
-        var returnType = actionParams.IsAsync ? "async System.Threading.Tasks.Task" : "void";
+        // TRY PASSING A TEXTDOCUMENTIDENTIFIER FOR THE CODE BEHIND FILE
+        var exceptionDelegatedParams = new DelegatedRenameParams(documentContext.Identifier, new Position(0, position), RazorLanguageKind.CSharp, "System.NotImplementedException");
+        var methodContent = await _languageServer.SendRequestAsync<DelegatedRenameParams, string>(RazorLanguageServerCustomMessageTargets.RazorSimplifyTypeEndpointName, exceptionDelegatedParams, cancellationToken).ConfigureAwait(false);
+        templateWithMethodSignature = templateWithMethodSignature.Replace(s_methodContent, methodContent);
+
+        var returnType = actionParams.IsAsync ? "System.Threading.Tasks.Task" : "void";
+        if (actionParams.IsAsync)
+        {
+            var delegatedParams = new DelegatedRenameParams(documentContext.Identifier, new Position(0, position), RazorLanguageKind.CSharp, returnType);
+            var typeName = await _languageServer.SendRequestAsync<DelegatedRenameParams, string>(RazorLanguageServerCustomMessageTargets.RazorSimplifyTypeEndpointName, delegatedParams, cancellationToken).ConfigureAwait(false);
+            returnType = $"async {typeName}";
+        }
+
         templateWithMethodSignature = templateWithMethodSignature.Replace(s_returnType, returnType);
 
         var eventTagHelper = documentContext.Project.TagHelpers
             .FirstOrDefault(th => th.Name == actionParams.EventName && th.IsEventHandlerTagHelper() && th.GetEventArgsType() is not null);
         var eventArgsType = eventTagHelper is null
             ? string.Empty // Couldn't find the params, generate no params instead.
-            : $"{eventTagHelper.GetEventArgsType()} e";
+            : eventTagHelper.GetEventArgsType();
+        if (!eventArgsType.IsNullOrEmpty())
+        {
+            var delegatedParams = new DelegatedRenameParams(documentContext.Identifier, new Position(0, position), RazorLanguageKind.CSharp, eventArgsType);
+            eventArgsType = await _languageServer.SendRequestAsync<DelegatedRenameParams, string>(RazorLanguageServerCustomMessageTargets.RazorSimplifyTypeEndpointName, delegatedParams, cancellationToken).ConfigureAwait(false);
+        }
 
-        return templateWithMethodSignature.Replace(s_eventArgs, eventArgsType);
+        return templateWithMethodSignature.Replace(s_eventArgs, $"{eventArgsType} e");
     }
 }

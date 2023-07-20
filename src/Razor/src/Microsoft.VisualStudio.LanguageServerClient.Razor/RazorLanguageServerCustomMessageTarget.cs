@@ -99,6 +99,8 @@ internal abstract class RazorLanguageServerCustomMessageTarget
 
     [JsonRpcMethod(RazorLanguageServerCustomMessageTargets.RazorRenameEndpointName, UseSingleObjectParameterDeserialization = true)]
     public abstract Task<WorkspaceEdit?> RenameAsync(DelegatedRenameParams request, CancellationToken cancellationToken);
+    [JsonRpcMethod(RazorLanguageServerCustomMessageTargets.RazorSimplifyTypeEndpointName, UseSingleObjectParameterDeserialization = true)]
+    public abstract Task<string?> SimplifyTypeAsync(DelegatedRenameParams request, CancellationToken cancellationToken);
 
     [JsonRpcMethod(RazorLanguageServerCustomMessageTargets.RazorHoverEndpointName, UseSingleObjectParameterDeserialization = true)]
     public abstract Task<VSInternalHover?> HoverAsync(DelegatedPositionParams request, CancellationToken cancellationToken);

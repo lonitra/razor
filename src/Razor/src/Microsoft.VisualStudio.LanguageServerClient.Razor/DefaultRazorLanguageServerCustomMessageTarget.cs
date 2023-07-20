@@ -1055,6 +1055,34 @@ internal class DefaultRazorLanguageServerCustomMessageTarget : RazorLanguageServ
         return response?.Response;
     }
 
+    public override async Task<string?> SimplifyTypeAsync(DelegatedRenameParams request, CancellationToken cancellationToken)
+    {
+        var delegationDetails = await GetProjectedRequestDetailsAsync(request, cancellationToken).ConfigureAwait(false);
+        if (delegationDetails is null)
+        {
+            return null;
+        }
+
+        var renameParams = new RenameParams()
+        {
+            TextDocument = new TextDocumentIdentifier()
+            {
+                Uri = delegationDetails.Value.ProjectedUri,
+            },
+            Position = request.ProjectedPosition,
+            NewName = request.NewName,
+        };
+
+        var textBuffer = delegationDetails.Value.TextBuffer;
+        var response = await _requestInvoker.ReinvokeRequestOnServerAsync<RenameParams, string?>(
+            textBuffer,
+            "textDocument/simplifyTypeNames",
+            delegationDetails.Value.LanguageServerName,
+            renameParams,
+            cancellationToken).ConfigureAwait(false);
+        return response?.Response;
+    }
+
     public override async Task<VSInternalDocumentOnAutoInsertResponseItem?> OnAutoInsertAsync(DelegatedOnAutoInsertParams request, CancellationToken cancellationToken)
     {
         var delegationDetails = await GetProjectedRequestDetailsAsync(request, cancellationToken).ConfigureAwait(false);

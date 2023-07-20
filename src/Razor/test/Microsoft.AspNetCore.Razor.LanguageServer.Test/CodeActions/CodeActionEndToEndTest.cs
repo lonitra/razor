@@ -39,7 +39,7 @@ public class CodeActionEndToEndTest : SingleServerDelegatingEndpointTestBase
     private const string GenerateEventHandlerReturnType = "void";
     private const string GenerateAsyncEventHandlerReturnType = "async System.Threading.Tasks.Task";
 
-    private static GenerateMethodCodeActionResolver[] CreateRazorCodeActionResolversFn(
+    private GenerateMethodCodeActionResolver[] CreateRazorCodeActionResolversFn(
         string filePath,
         RazorCodeDocument codeDocument,
         RazorLSPOptionsMonitor? optionsMonitor = null)
@@ -47,7 +47,7 @@ public class CodeActionEndToEndTest : SingleServerDelegatingEndpointTestBase
             {
                 new GenerateMethodCodeActionResolver(
                     new GenerateMethodResolverDocumentContextFactory(filePath, codeDocument),
-                    optionsMonitor ?? TestRazorLSPOptionsMonitor.Create())
+                    optionsMonitor ?? TestRazorLSPOptionsMonitor.Create(), LanguageServer)
             };
 
     public CodeActionEndToEndTest(ITestOutputHelper testOutput)

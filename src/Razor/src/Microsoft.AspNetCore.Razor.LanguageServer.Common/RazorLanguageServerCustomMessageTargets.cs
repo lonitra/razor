@@ -41,4 +41,6 @@ internal static class RazorLanguageServerCustomMessageTargets
     public const string RazorImplementationEndpointName = "razor/implementation";
 
     public const string RazorReferencesEndpointName = "razor/references";
+
+    public const string RazorSimplifyTypeEndpointName = "razor/simplifyType";
 }
